@@ -130,7 +130,7 @@ def markov_skor(v):
     return cift
 
 
-def kol on_uret():
+def kolon_uret():
     sk6or, f, son:
 10, trend, son           , onceki = skor_hesapla(veri)
     sicak, ilimli, soguk = siniflandir(f)
