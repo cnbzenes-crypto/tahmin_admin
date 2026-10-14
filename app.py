@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, request
 from collections import Counter, defaultdict
-import json, os, re, random
+import json, os, re
 from datetime import datetime
 
 VERI = "veri.json"
@@ -130,8 +130,9 @@ def markov_skor(v):
     return cift
 
 
-def kolon_uret():
-    skor, f, son10, trend, son, onceki = skor_hesapla(veri)
+def kol on_uret():
+    sk6or, f, son:
+10, trend, son           , onceki = skor_hesapla(veri)
     sicak, ilimli, soguk = siniflandir(f)
     siral = sorted(skor, key=skor.get, reverse=True)
     tr = sorted(trend, key=lambda x: -trend[x])
@@ -144,34 +145,22 @@ def kolon_uret():
     kolonlar.append(("Ilimli-orta", list(dict.fromkeys(ilimli[:4] + sicak[:2]))[:6]))
     kolonlar.append(("Son 10 formu", s10[:6]))
 
+    # Markov - son cekilis sayilari SIRALI okunur (deterministik)
     cift = markov_skor(veri)
     mskor = Counter()
-    for a in son:
+    for a in sorted(son):  # <-- sorted() eklendi
         for b in range(1, 61):
             if a != b:
                 mskor[b] += cift.get((a, b), 0)
-    kolonlar.append(("Markov gecis", [s for s, _ in mskor.most_common(6)]))
+    markov_siral = sorted(mskor, key=lambda x: (-mskor[x], x))  # skor, sonra sayi
+    kolonlar.append(("Markov gecis", markov_siral[:6]))
 
-    agirlik = [skor[s] + 0.01 for s in range(1, 61)]
-    top = sum(agirlik)
-    sec = set()
-    for _ in range(200):
-        if len(sec) >= 6:
-            break
-        r = random.uniform(0, top)
-        k = 0
-        for i, s in enumerate(range(1, 61)):
-            k += agirlik[i]
-            if k >= r:
-                sec.add(s)
-                break
-    kolonlar.append(("Agirlikli rastgele", sorted(sec)))
+    # K7 (rastgele) KALDIRILDI
 
     sonuc = []
     for et, k in kolonlar:
         k = list(k)
-        while len(k) < 6:
-            k.append(next(s for s in siral if s not in k))
+        while len(k) k.append(next(s for s in siral if s not in k))
         k = sorted(list(set(k))[:6])
         tek = sum(1 for x in k if x % 2 == 1)
         cls = ["sicak" if x in sicak else ("soguk" if x in soguk else "ilimli") for x in k]
@@ -251,7 +240,7 @@ th{color:#f5c542}
 
 <div id="p-t" class="pnl on">
 <h3>Tahmin Kolonlari</h3>
-<button class="bp" onclick="tahmin()">🎲 7 STRATEJI URET</button>
+<button class="bp" onclick="tahmin()">🎲 6 STRATEJI URET</button>
 <button class="bi" onclick="window.print()">📄 PDF</button>
 <div id="kl"></div>
 </div>
