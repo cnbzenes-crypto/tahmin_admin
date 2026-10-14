@@ -1,10 +1,17 @@
 from flask import Flask, jsonify, request
-from collections import Counter, defaultdict
-import json, os, re
-from datetime import datetime
+from collections import Counter
+import json
+import os
+import re
+from pymongo import MongoClient
 
 VERI = "veri.json"
-TAHMIN_DOSYA = "tahminler.json"
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+
+client = MongoClient(MONGO_URI)
+db = client["loto_db"]
+cekilisler_col = db["cekilisler"]
+tahminler_col = db["tahminler"]
 
 VERILER = {
 1:[34,36,39,45,53,55],2:[20,21,23,26,32,37],3:[6,9,25,29,45,57],
@@ -47,39 +54,25 @@ VERILER = {
 112:[10,16,30,38,50,59],113:[14,16,43,54,55,56],114:[3,15,43,48,50,52],
 115:[3,6,17,18,20,39],116:[16,26,44,46,57,59],117:[2,25,42,45,53,54],
 118:[14,15,34,38,50,56],119:[9,17,31,34,51,55],120:[7,14,20,43,46,56],
-121:[11,16,21,36,39,58],122:[16,18,22,31,37,55],123:[18,45,54,56,57,60]}
-
+121:[11,16,21,36,39,58],122:[16,18,22,31,37,55],123:[18,45,54,56,57,60]
+}
 
 def yukle():
-    if os.path.exists(VERI):
-        try:
-            return {int(k): v for k, v in json.load(open(VERI, encoding="utf-8")).items()}
-        except Exception:
-            pass
-    json.dump({str(k): v for k, v in VERILER.items()}, open(VERI, "w", encoding="utf-8"))
-    return dict(VERILER)
-
+    veri = {}
+    for doc in cekilisler_col.find():
+        veri[doc["no"]] = doc["sayilar"]
+    if not veri:
+        for no, sayilar in VERILER.items():
+            cekilisler_col.insert_one({"no": no, "sayilar": sayilar})
+        veri = dict(VERILER)
+    return veri
 
 def kaydet():
-    json.dump({str(k): veri[k] for k in sorted(veri)}, open(VERI, "w", encoding="utf-8"))
-
-
-def th_yukle():
-    if os.path.exists(TAHMIN_DOSYA):
-        try:
-            return json.load(open(TAHMIN_DOSYA, encoding="utf-8"))
-        except Exception:
-            pass
-    return {"kayitli": [], "karsilastirma": []}
-
-
-def th_kaydet():
-    json.dump(tahminler, open(TAHMIN_DOSYA, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-
+    cekilisler_col.delete_many({})
+    for no, sayilar in veri.items():
+        cekilisler_col.insert_one({"no": no, "sayilar": sayilar})
 
 veri = yukle()
-tahminler = th_yukle()
-
 
 def frekans(v, bas=None, son=None):
     c = Counter()
@@ -88,14 +81,12 @@ def frekans(v, bas=None, son=None):
             c.update(v[k])
     return c
 
-
 def siniflandir(f):
     ort = sum(f.values()) / 60 if f else 1
     sicak = sorted([s for s in range(1, 61) if f.get(s, 0) >= ort * 1.15], key=lambda x: -f.get(x, 0))
     soguk = sorted([s for s in range(1, 61) if f.get(s, 0) <= ort * 0.85], key=lambda x: f.get(x, 0))
     ilimli = [s for s in range(1, 61) if s not in sicak and s not in soguk]
     return sicak, ilimli, soguk
-
 
 def skor_hesapla(v):
     if not v:
@@ -119,7 +110,6 @@ def skor_hesapla(v):
         skor[s] = max(0, 0.4 * a + 0.3 * b + 0.3 * c - ceza)
     return skor, f, son10, trend, son, onceki
 
-
 def markov_skor(v):
     cift = Counter()
     for sayilar in v.values():
@@ -129,10 +119,8 @@ def markov_skor(v):
                     cift[(a, b)] += 1
     return cift
 
-
 def kolon_uret():
-    sk6or, f, son:
-10, trend, son           , onceki = skor_hesapla(veri)
+    skor, f, son10, trend, son, onceki = skor_hesapla(veri)
     sicak, ilimli, soguk = siniflandir(f)
     siral = sorted(skor, key=skor.get, reverse=True)
     tr = sorted(trend, key=lambda x: -trend[x])
@@ -145,62 +133,32 @@ def kolon_uret():
     kolonlar.append(("Ilimli-orta", list(dict.fromkeys(ilimli[:4] + sicak[:2]))[:6]))
     kolonlar.append(("Son 10 formu", s10[:6]))
 
-    # Markov - son cekilis sayilari SIRALI okunur (deterministik)
     cift = markov_skor(veri)
     mskor = Counter()
-    for a in sorted(son):  # <-- sorted() eklendi
+    for a in sorted(son):
         for b in range(1, 61):
             if a != b:
                 mskor[b] += cift.get((a, b), 0)
-    markov_siral = sorted(mskor, key=lambda x: (-mskor[x], x))  # skor, sonra sayi
+    markov_siral = sorted(mskor, key=lambda x: (-mskor[x], x))
     kolonlar.append(("Markov gecis", markov_siral[:6]))
-
-    # K7 (rastgele) KALDIRILDI
 
     sonuc = []
     for et, k in kolonlar:
         k = list(k)
-        while len(k) k.append(next(s for s in siral if s not in k))
+        while len(k) < 6:
+            k.append(next(s for s in siral if s not in k))
         k = sorted(list(set(k))[:6])
         tek = sum(1 for x in k if x % 2 == 1)
         cls = ["sicak" if x in sicak else ("soguk" if x in soguk else "ilimli") for x in k]
         sonuc.append({"e": et, "s": k, "t": sum(k), "tk": tek, "cf": 6 - tek, "c": cls})
     return sonuc
 
-
-def backtest(n=50):
-    keys = sorted(veri.keys())
-    test = keys[-n:] if len(keys) >= n else keys
-    detay = []
-    toplam = 0
-    sayi = 0
-    for tn in test:
-        gecmis = {k: veri[k] for k in keys if k < tn}
-        if len(gecmis) < 10:
-            continue
-        skor, _, _, _, _, _ = skor_hesapla(gecmis)
-        siral = sorted(skor, key=skor.get, reverse=True)
-        tah = set(siral[:6])
-        ger = set(veri[tn])
-        tut = len(tah & ger)
-        toplam += tut
-        sayi += 1
-        detay.append({"no": tn, "tahmin": sorted(tah), "gercek": sorted(ger), "tutan": tut})
-    return {
-        "detay": detay[-20:],
-        "ortalama": round(toplam / sayi, 2) if sayi else 0,
-        "test": sayi,
-        "toplam_tutulan": toplam
-    }
-
-
-HTML = r"""<!DOCTYPE html>
-<html lang="tr"><head><meta charset="UTF-8"><title>Loto v5</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+HTML = """<!DOCTYPE html>
+<html lang="tr"><head><meta charset="UTF-8"><title>Loto v6</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:Segoe UI,Arial,sans-serif;background:#1e1e2e;color:#eee;padding:16px}
-.c{max-width:1100px;margin:auto}
+.c{max-width:1000px;margin:auto}
 h1{color:#f5c542;text-align:center;margin-bottom:12px;font-size:22px}
 .hdr{text-align:center;margin-bottom:16px}
 .b{background:#2a2a3e;padding:6px 14px;border-radius:20px;display:inline-block;margin:3px;font-size:12px}
@@ -225,83 +183,70 @@ th{color:#f5c542}
 .stat{display:inline-block;background:#1e1e2e;padding:10px 16px;border-radius:8px;margin:4px;font-size:13px}
 .stat b{color:#f5c542;font-size:18px;display:block}
 .chart-box{background:#1e1e2e;padding:12px;border-radius:10px;height:340px}
-</style></head><body><div class="c">
-<h1>🎯 Loto Tahmin v5</h1>
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head><body><div class="c">
+<h1>Loto Tahmin v6</h1>
 <div class="hdr"><span class="b" id="st">...</span></div>
 <div class="tabs">
-<button class="tab on" onclick="go('t')">Tahmin</button>
-<button class="tab" onclick="go('g')">Grafik</button>
-<button class="tab" onclick="go('s')">Simulasyon</button>
-<button class="tab" onclick="go('k')">Kayitli</button>
-<button class="tab" onclick="go('e')">Ekle</button>
-<button class="tab" onclick="go('tp')">Toplu</button>
-<button class="tab" onclick="go('y')">Yonet</button>
+<button class="tab on" onclick="go('t',this)">Tahmin</button>
+<button class="tab" onclick="go('g',this)">Grafik</button>
+<button class="tab" onclick="go('s',this)">Simulasyon</button>
+<button class="tab" onclick="go('e',this)">Ekle</button>
+<button class="tab" onclick="go('tp',this)">Toplu</button>
+<button class="tab" onclick="go('y',this)">Yonet</button>
 </div>
-
 <div id="p-t" class="pnl on">
 <h3>Tahmin Kolonlari</h3>
-<button class="bp" onclick="tahmin()">🎲 6 STRATEJI URET</button>
-<button class="bi" onclick="window.print()">📄 PDF</button>
+<button class="bp" onclick="tahmin()">6 STRATEJI URET</button>
+<button class="bi" onclick="window.print()">PDF</button>
 <div id="kl"></div>
 </div>
-
 <div id="p-g" class="pnl">
 <h3>Sayi Frekans Grafigi</h3>
 <div class="chart-box"><canvas id="grf"></canvas></div>
 <h3 style="margin-top:16px">Trend (Son 30 vs Genel)</h3>
 <div class="chart-box"><canvas id="trf"></canvas></div>
 </div>
-
 <div id="p-s" class="pnl">
-<h3>Simulasyon (Backtest)</h3>
-<p style="color:#a0a0c0;font-size:12px;margin-bottom:10px">Model gecmise gore test edilir - son N cekiliste dogruluk olculur.</p>
+<h3>Simulasyon</h3>
+<p style="color:#a0a0c0;font-size:12px;margin-bottom:10px">Gecmis test - son N cekiliste dogruluk</p>
 <button class="bp" onclick="backtest(30)">Son 30</button>
 <button class="bp" onclick="backtest(50)">Son 50</button>
 <button class="bp" onclick="backtest(100)">Son 100</button>
 <div id="bt-sonuc"></div>
 </div>
-
-<div id="p-k" class="pnl">
-<h3>Kayitli Tahminler ve Karsilastirma</h3>
-<button class="bi" onclick="kayitlariGoster()">🔄 Yenile</button>
-<button class="bg" onclick="tahminiKaydet()">💾 Su An Tahmin Et ve Kaydet</button>
-<div id="kayit-list"></div>
-</div>
-
 <div id="p-e" class="pnl">
 <h3>Yeni Cekilis Ekle</h3>
 <input id="en" type="number" placeholder="124">
 <input id="es" placeholder="5 12 24 29 48 55">
 <button class="bg" onclick="ekle()">KAYDET</button>
 </div>
-
 <div id="p-tp" class="pnl">
-<h3>Toplu Ekle - Yapistir</h3>
-<p style="color:#a0a0c0;font-size:12px;margin-bottom:8px">Her satir: &lt;no&gt; &lt;s1&gt;...&lt;s6&gt; (no bos ise otomatik) - Millipiyango sitesinden kopyalayip yapistirin, otomatik ayristirilir.</p>
-<textarea id="tm" rows="8" placeholder="124 5 12 24 29 48 55&#10;125 3 18 27 33 41 57"></textarea>
+<h3>Toplu Ekle</h3>
+<p style="color:#a0a0c0;font-size:12px;margin-bottom:8px">Her satir: no s1 s2 s3 s4 s5 s6</p>
+<textarea id="tm" rows="8" placeholder="124 5 12 24 29 48 55"></textarea>
 <button class="bg" onclick="toplu()">KAYDET</button>
 </div>
-
 <div id="p-y" class="pnl">
-<h3>Yonet - Tum Cekilisler</h3>
+<h3>Yonet</h3>
 <input id="ya" placeholder="Ara (no)..." oninput="yliste()">
 <div id="yliste"></div>
 </div>
-
 </div>
 <script>
-let grf=null, trf=null;
+let grf=null,trf=null;
 async function dst(){let r=await fetch('/api/d'),d=await r.json();
 document.getElementById('st').textContent=d.t+' cekilis, Son #'+d.s;
 document.getElementById('en').placeholder=d.s+1;}
-function go(id){document.querySelectorAll('.pnl').forEach(p=>p.classList.remove('on'));
+function go(id,btn){document.querySelectorAll('.pnl').forEach(p=>p.classList.remove('on'));
 document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
 document.getElementById('p-'+id).classList.add('on');
-event.target.classList.add('on');
-if(id==='g')grafik();if(id==='k')kayitlariGoster();if(id==='y')yliste();if(id==='e')dst();}
+if(btn)btn.classList.add('on');
+if(id==='g')grafik();if(id==='y')yliste();if(id==='e')dst();}
 async function tahmin(){let r=await fetch('/api/t'),ks=await r.json();
 let d=document.getElementById('kl');d.innerHTML='';
-let c=['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#e67e22','#1abc9c'];
+let c=['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#e67e22'];
 ks.forEach((k,i)=>{let e=document.createElement('div');e.className='card';
 e.style.borderLeftColor=c[i];
 let t='';k.s.forEach((s,j)=>{t+='<div class="top '+k.c[j]+'">'+String(s).padStart(2,'0')+'</div>';});
@@ -334,27 +279,9 @@ d.detay.forEach(x=>{h+='<tr><td>#'+x.no+'</td><td style="color:#f5c542">'+x.tahm
 '<td>'+x.gercek.join(', ')+'</td><td><b>'+x.tutan+'</b></td></tr>';});
 h+='</table>';
 document.getElementById('bt-sonuc').innerHTML=h;}
-async function tahminiKaydet(){
-let r=await fetch('/api/tahmin_kaydet',{method:'POST'});
-let d=await r.json();
-if(d.ok){bildirim('Tahmin kaydedildi!');kayitlariGoster();}
-else alert(d.hata);}
-async function kayitlariGoster(){let r=await fetch('/api/kayitli'),d=await r.json();
-let h='<h4 style="color:#f5c542;margin:10px 0">Aktif tahminler (henuz sonuclanmamis)</h4>';
-if(d.kayitli.length===0)h+='<p style="color:#a0a0c0">Yok</p>';
-d.kayitli.forEach(x=>{h+='<div class="card"><b>'+x.tarih+'</b> → '+x.sayilar.join(', ')+'</div>';});
-h+='<h4 style="color:#f5c542;margin:10px 0">Karsilastirmalar</h4>';
-if(d.karsilastirma.length===0)h+='<p style="color:#a0a0c0">Henuz sonuclanmis tahmin yok</p>';
-d.karsilastirma.slice().reverse().forEach(x=>{
-h+='<div class="card"><b>'+x.tarih+'</b><br>Tahmin: '+x.tahmin.join(', ')+
-'<br>Gercek: '+x.gercek.join(', ')+
-'<br><span style="color:'+(x.tutan>=3?'#2ecc71':'#e74c3c')+'">Tutan: '+x.tutan+' sayi ('+(x.tutulan.length?x.tutulan.join(', '):'-')+')</span></div>';});
-document.getElementById('kayit-list').innerHTML=h;}
 async function ekle(){let n=+document.getElementById('en').value,s=document.getElementById('es').value;
 let r=await fetch('/api/e',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({no:n,sayilar:s})});
-let d=await r.json();
-if(d.ok){bildirim('Cekilis #'+n+' eklendi');document.getElementById('es').value='';dst();kayitlariGoster();}
-else alert(d.hata||d.mesaj);}
+let d=await r.json();alert(d.ok?'Eklendi':'Hata: '+d.hata);if(d.ok){document.getElementById('es').value='';dst();}}
 async function toplu(){let m=document.getElementById('tm').value;
 let r=await fetch('/api/top',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({metin:m})});
 let d=await r.json();alert(d.mesaj||d.hata);if(d.ok){document.getElementById('tm').value='';dst();}}
@@ -366,29 +293,43 @@ div.innerHTML+='<tr><td>#'+x.no+'</td><td>'+x.sayilar.join(', ')+'</td>'+
 '<td><button class="bi" style="padding:3px 8px;font-size:11px" onclick="sil('+x.no+')">Sil</button></td></tr>';});
 div.innerHTML+='</table>';}
 async function sil(n){if(!confirm('Sil?'))return;await fetch('/api/s/'+n,{method:'DELETE'});yliste();dst();}
-function bildirim(msg){if(Notification.permission==='granted'){new Notification('Loto',{body:msg});}}
-if(Notification.permission==='default')Notification.requestPermission();
 dst();
 </script></body></html>"""
 
-
 app = Flask(__name__)
 
+def backtest(n=50):
+    keys = sorted(veri.keys())
+    test = keys[-n:] if len(keys) >= n else keys
+    detay = []
+    toplam = 0
+    sayi = 0
+    for tn in test:
+        gecmis = {k: veri[k] for k in keys if k < tn}
+        if len(gecmis) < 10:
+            continue
+        skor, _, _, _, _, _ = skor_hesapla(gecmis)
+        siral = sorted(skor, key=skor.get, reverse=True)
+        tah = set(siral[:6])
+        ger = set(veri[tn])
+        tut = len(tah & ger)
+        toplam += tut
+        sayi += 1
+        detay.append({"no": tn, "tahmin": sorted(tah), "gercek": sorted(ger), "tutan": tut})
+    return {"detay": detay[-20:], "ortalama": round(toplam / sayi, 2) if sayi else 0,
+            "test": sayi, "toplam_tutulan": toplam}
 
 @app.route("/")
 def idx():
     return HTML
 
-
 @app.route("/api/d")
 def api_d():
     return jsonify({"t": len(veri), "s": max(veri.keys()) if veri else 0})
 
-
 @app.route("/api/t")
 def api_t():
     return jsonify(kolon_uret())
-
 
 @app.route("/api/grafik")
 def api_grafik():
@@ -396,39 +337,17 @@ def api_grafik():
     sicak, ilimli, soguk = siniflandir(f)
     sayilar = []
     for s in range(1, 61):
-        if s in sicak:
-            sn = "sicak"
-        elif s in soguk:
-            sn = "soguk"
-        else:
-            sn = "ilimli"
+        sn = "sicak" if s in sicak else ("soguk" if s in soguk else "ilimli")
         sayilar.append({"s": s, "f": f.get(s, 0), "sinif": sn})
     son30 = frekans(veri, son=max(veri.keys()) - 29) if veri else Counter()
     ort = sum(f.values()) / 60 if f else 1
     trend = [{"s": s, "t": son30.get(s, 0) - ort * (30 / max(len(veri), 1))} for s in range(1, 61)]
     return jsonify({"sayilar": sayilar, "trend": trend})
 
-
 @app.route("/api/backtest")
 def api_bt():
     n = int(request.args.get("n", 50))
     return jsonify(backtest(n))
-
-
-@app.route("/api/tahmin_kaydet", methods=["POST"])
-def api_th_kaydet():
-    ks = kolon_uret()
-    en_iyi = ks[0]["s"]
-    tarih = datetime.now().strftime("%Y-%m-%d %H:%M")
-    tahminler["kayitli"].append({"tarih": tarih, "sayilar": en_iyi})
-    th_kaydet()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/kayitli")
-def api_kayitli():
-    return jsonify(tahminler)
-
 
 @app.route("/api/e", methods=["POST"])
 def api_e():
@@ -444,22 +363,9 @@ def api_e():
             return jsonify({"ok": False, "hata": "Zaten var"})
         veri[n] = sorted(s)
         kaydet()
-        # Karsilastirma: eski tahminlerle otomatik karsilastir
-        yeni_kars = []
-        for t in tahminler["kayitli"]:
-            tut = set(t["sayilar"]) & set(s)
-            if len(tut) > 0:
-                tahminler["karsilastirma"].append({
-                    "tarih": t["tarih"], "tahmin": t["sayilar"],
-                    "gercek": sorted(s), "tutan": len(tut), "tutulan": sorted(list(tut)),
-                    "cekilis_no": n
-                })
-        tahminler["kayitli"] = []
-        th_kaydet()
         return jsonify({"ok": True})
     except Exception as ex:
         return jsonify({"ok": False, "hata": str(ex)})
-
 
 @app.route("/api/top", methods=["POST"])
 def api_top():
@@ -492,11 +398,9 @@ def api_top():
     except Exception as ex:
         return jsonify({"ok": False, "hata": str(ex)})
 
-
 @app.route("/api/l")
 def api_l():
     return jsonify({"liste": [{"no": n, "sayilar": veri[n]} for n in sorted(veri)]})
-
 
 @app.route("/api/s/<int:n>", methods=["DELETE"])
 def api_s(n):
@@ -506,12 +410,6 @@ def api_s(n):
         return jsonify({"ok": True})
     return jsonify({"ok": False})
 
-
 if __name__ == "__main__":
-    print("=" * 45)
-    print("  LOTO v5 - TAM OZELLIKLI")
-    print("=" * 45)
-    print("  Hafiza: " + str(len(veri)) + " cekilis")
-    print("  http://127.0.0.1:5000")
-    print("=" * 45)
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
